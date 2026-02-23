@@ -56,12 +56,29 @@ class TestSimulatedWallet:
         assert w.balance('B') == pytest.approx(2.0)  # 100/50
 
 
+# --- Stub client ---
+
+class _StubClient:
+    """Serves canned OHLCV data — no network, no disk."""
+
+    def __init__(self, token_data):
+        self._data = token_data
+
+    def get_top_pools(self, network, token):
+        return [{"attributes": {"address": f"pool_{token}"}}]
+
+    def get_ohlcv(self, network, pool, timeframe, token,
+                  limit=1000, before_timestamp=None):
+        return self._data.get(token, [])
+
+
 # --- PriceHistory ---
 
 def _make_history(prices, freq='h'):
     dates = pd.date_range('2025-01-01', periods=len(prices), freq=freq)
-    series = pd.Series(prices, index=dates, dtype=float)
-    return PriceHistory.from_series('TOK', series), dates
+    ohlcv = [[int(d.timestamp()), p] for d, p in zip(dates, prices)]
+    client = _StubClient({'TOK': ohlcv})
+    return PriceHistory('TOK', 'solana', client, start_date='2025-01-01'), dates
 
 
 class TestPriceHistory:
@@ -138,14 +155,22 @@ def _make_bars(n=20, seed=42):
     }, index=dates)
 
 
+def _stub_client_from_bars(df):
+    token_data = {}
+    for col, token in [('price_a', 'token_a'), ('price_b', 'token_b')]:
+        token_data[token] = [
+            [int(ts.timestamp()), price]
+            for ts, price in zip(df.index, df[col])
+        ]
+    return _StubClient(token_data)
+
+
 class TestBacktestEngine:
-    def _run(self, strategy_name, n=20, df_hourly=None):
+    def _run(self, strategy_name, n=20):
         df = _make_bars(n)
-        engine = BacktestEngine('token_a', 'token_b', swap_fee=0.005)
-        result = engine.run(
-            REGISTRY[strategy_name](), '2025-01-01', 'hourly',
-            df_bars=df, df_hourly=df_hourly if df_hourly is not None else df,
-        )
+        engine = BacktestEngine('token_a', 'token_b', swap_fee=0.005,
+                                client=_stub_client_from_bars(df))
+        result = engine.run(REGISTRY[strategy_name](), '2025-01-01', 'hourly')
         return result, df
 
     def test_hold_no_trades(self):
@@ -159,12 +184,16 @@ class TestBacktestEngine:
 
     def test_trade_half_signal_is_absolute(self):
         df = _make_bars(50)
+        client = _StubClient({
+            't_a': [[int(ts.timestamp()), p] for ts, p in zip(df.index, df['price_a'])],
+            't_b': [[int(ts.timestamp()), p] for ts, p in zip(df.index, df['price_b'])],
+        })
         strat = REGISTRY['trade-half']()
         p0 = df.iloc[0]
         dex = SimulatedDex({'t_a': p0['price_a'], 't_b': p0['price_b']}, fee=0.005)
         wallet = SimulatedWallet.balanced('t_a', 't_b', dex)
-        ha = PriceHistory.from_series('t_a', df['price_a'])
-        hb = PriceHistory.from_series('t_b', df['price_b'])
+        ha = PriceHistory('t_a', 'solana', client, start_date='2025-01-01')
+        hb = PriceHistory('t_b', 'solana', client, start_date='2025-01-01')
         ha.set_cursor(1)
         hb.set_cursor(1)
         signal = strat.step(wallet, ha, hb, tick=df.index[1])
@@ -174,21 +203,23 @@ class TestBacktestEngine:
             assert abs(signal) == pytest.approx(wallet.balance('t_a') / 2)
 
     def test_ema_momentum_runs(self):
-        result, df = self._run('ema-momentum', n=100, df_hourly=_make_bars(100))
+        result, df = self._run('ema-momentum', n=100)
         assert len(result.value_history) == len(df)
 
     def test_history_length_matches_bars(self):
         df = _make_bars(30)
-        engine = BacktestEngine('token_a', 'token_b', swap_fee=0.005)
+        engine = BacktestEngine('token_a', 'token_b', swap_fee=0.005,
+                                client=_stub_client_from_bars(df))
         for name in REGISTRY:
-            result = engine.run(
-                REGISTRY[name](), '2025-01-01', 'hourly',
-                df_bars=df, df_hourly=df,
-            )
+            result = engine.run(REGISTRY[name](), '2025-01-01', 'hourly')
             assert len(result.value_history) == len(df), f"{name}: length mismatch"
 
     def test_balances_never_negative(self):
         df = _make_bars(50)
+        client = _StubClient({
+            't_a': [[int(ts.timestamp()), p] for ts, p in zip(df.index, df['price_a'])],
+            't_b': [[int(ts.timestamp()), p] for ts, p in zip(df.index, df['price_b'])],
+        })
         for name in ['trade-half', 'ema-momentum']:
             strat = REGISTRY[name]()
             p0 = df.iloc[0]
@@ -197,8 +228,8 @@ class TestBacktestEngine:
                 fee=0.005,
             )
             wallet = SimulatedWallet.balanced('t_a', 't_b', dex)
-            ha = PriceHistory.from_series('t_a', df['price_a'])
-            hb = PriceHistory.from_series('t_b', df['price_b'])
+            ha = PriceHistory('t_a', 'solana', client, start_date='2025-01-01')
+            hb = PriceHistory('t_b', 'solana', client, start_date='2025-01-01')
             for i in range(1, len(df)):
                 ha.set_cursor(i)
                 hb.set_cursor(i)

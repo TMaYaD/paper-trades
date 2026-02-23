@@ -33,83 +33,22 @@ class BacktestEngine:
         self.swap_fee = swap_fee
         self.network = network
 
-    def run(self, strategy, start_date, interval: str = "hourly",
-            df_bars: pd.DataFrame | None = None,
-            df_hourly: pd.DataFrame | None = None) -> BacktestResult:
-        """Run a strategy over historical bars.
-
-        If df_bars/df_hourly are provided, uses them directly (avoids re-fetching).
-        Otherwise fetches via PriceHistory (on-demand loading).
-        """
-        if df_bars is not None:
-            return self._run_from_dataframe(strategy, df_bars, df_hourly)
-        else:
-            return self._run_on_demand(strategy, start_date, interval)
-
-    def _run_from_dataframe(self, strategy, df_bars: pd.DataFrame,
-                            df_hourly: pd.DataFrame | None = None) -> BacktestResult:
+    def run(self, strategy, start_date,
+            interval: str = "hourly") -> BacktestResult:
+        """Run a strategy over historical bars."""
         token_a, token_b = self.token_a, self.token_b
 
-        prices_a = df_hourly["price_a"] if df_hourly is not None else df_bars["price_a"]
-        prices_b = df_hourly["price_b"] if df_hourly is not None else df_bars["price_b"]
-        history_a = PriceHistory.from_series(token_a, prices_a)
-        history_b = PriceHistory.from_series(token_b, prices_b)
-
-        p_a0, p_b0 = df_bars.iloc[0]["price_a"], df_bars.iloc[0]["price_b"]
-        dex = SimulatedDex({token_a: p_a0, token_b: p_b0}, fee=self.swap_fee)
-        wallet = SimulatedWallet.balanced(token_a, token_b, dex)
-
-        value_history = [_portfolio_value(wallet, dex, token_a, token_b)]
-        trades = 0
-        dates = list(df_bars.index)
-
-        for i in range(1, len(df_bars)):
-            tick = df_bars.index[i]
-            p_a = df_bars["price_a"].iloc[i]
-            p_b = df_bars["price_b"].iloc[i]
-
-            dex.prices[token_a] = p_a
-            dex.prices[token_b] = p_b
-
-            if df_hourly is not None:
-                idx = df_hourly.index.get_indexer([tick], method="ffill")[0]
-                history_a.set_cursor(idx)
-                history_b.set_cursor(idx)
-            else:
-                history_a.set_cursor(i)
-                history_b.set_cursor(i)
-
-            signal = strategy.step(wallet, history_a, history_b, tick=tick)
-            if signal != 0:
-                if signal > 0:
-                    wallet.swap(token_b, signal, token_a, dex)
-                else:
-                    wallet.swap(token_a, abs(signal), token_b, dex)
-                trades += 1
-
-            value_history.append(_portfolio_value(wallet, dex, token_a, token_b))
-
-        return BacktestResult(
-            value_history=value_history,
-            trade_count=trades,
-            dates=dates,
-        )
-
-    def _run_on_demand(self, strategy, start_date, interval) -> BacktestResult:
-        token_a, token_b = self.token_a, self.token_b
-
-        hist_a = PriceHistory(token_a, self.network, self._client)
-        hist_b = PriceHistory(token_b, self.network, self._client)
-        hist_a.load_history(start_date)
-        hist_b.load_history(start_date)
+        history_a = PriceHistory(token_a, self.network, self._client, start_date)
+        history_b = PriceHistory(token_b, self.network, self._client, start_date)
 
         # Align series on common timestamps
-        common_idx = hist_a.all_prices().index.intersection(hist_b.all_prices().index)
+        common_idx = history_a.all_prices().index.intersection(
+            history_b.all_prices().index)
         if interval == "daily":
             common_idx = pd.Series(index=common_idx).resample("D").first().index
 
-        p_a0 = hist_a.price_at(common_idx[0])
-        p_b0 = hist_b.price_at(common_idx[0])
+        p_a0 = history_a.price_at(common_idx[0])
+        p_b0 = history_b.price_at(common_idx[0])
         dex = SimulatedDex({token_a: p_a0, token_b: p_b0}, fee=self.swap_fee)
         wallet = SimulatedWallet.balanced(token_a, token_b, dex)
 
@@ -119,15 +58,17 @@ class BacktestEngine:
 
         for i in range(1, len(common_idx)):
             tick = common_idx[i]
-            hist_a.set_cursor(hist_a.all_prices().index.get_indexer([tick], method="ffill")[0])
-            hist_b.set_cursor(hist_b.all_prices().index.get_indexer([tick], method="ffill")[0])
-            p_a = hist_a.current_price
-            p_b = hist_b.current_price
+            history_a.set_cursor(
+                history_a.all_prices().index.get_indexer([tick], method="ffill")[0])
+            history_b.set_cursor(
+                history_b.all_prices().index.get_indexer([tick], method="ffill")[0])
+            p_a = history_a.current_price
+            p_b = history_b.current_price
 
             dex.prices[token_a] = p_a
             dex.prices[token_b] = p_b
 
-            signal = strategy.step(wallet, hist_a, hist_b, tick=tick)
+            signal = strategy.step(wallet, history_a, history_b, tick=tick)
             if signal != 0:
                 if signal > 0:
                     wallet.swap(token_b, signal, token_a, dex)

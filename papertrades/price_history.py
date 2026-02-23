@@ -5,20 +5,28 @@ import pandas as pd
 
 
 class PriceHistory:
-    """Domain-specific price accessor. Loads data on demand via client.
+    """Domain-specific price accessor.
 
-    Backtest: load_history() fetches historical data, engine advances cursor.
-    Live: poll() fetches current price, appends to series.
+    Backtest: pass start_date — history is lazy-loaded on first access.
+    Live: omit start_date — data arrives via poll()/append().
     """
 
-    def __init__(self, token: str, network: str, client):
+    def __init__(self, token: str, network: str, client,
+                 start_date: str | None = None):
         self.token = token
         self.network = network
         self._client = client
+        self._start_date = start_date
         self._pool = None
         self._series = pd.Series(dtype=float)
         self._series.index = pd.DatetimeIndex([])
         self._cursor = -1
+        self._loaded = start_date is None  # nothing to lazy-load in live mode
+
+    def _ensure_loaded(self):
+        if not self._loaded:
+            self._loaded = True
+            self._fetch_history()
 
     def _resolve_pool(self):
         if self._pool is None:
@@ -30,12 +38,14 @@ class PriceHistory:
 
     @property
     def current_price(self) -> float:
+        self._ensure_loaded()
         if self._cursor < 0:
             raise ValueError(f"No current price for {self.token}")
         return float(self._series.iloc[self._cursor])
 
     def price_at(self, time) -> float:
         """Closest price at or before the given time."""
+        self._ensure_loaded()
         time = pd.Timestamp(time)
         mask = self._series.index[self._series.index <= time]
         if len(mask) == 0:
@@ -44,16 +54,19 @@ class PriceHistory:
 
     def prices_since(self, time) -> pd.Series:
         """All prices from time up to current cursor position."""
+        self._ensure_loaded()
         time = pd.Timestamp(time)
         end = self._series.index[self._cursor]
         return self._series.loc[time:end].copy()
 
     def all_prices(self) -> pd.Series:
         """All prices up to current cursor position."""
+        self._ensure_loaded()
         return self._series.iloc[: self._cursor + 1].copy()
 
     def set_cursor(self, idx: int):
         """Advance the current tick position (called by engine)."""
+        self._ensure_loaded()
         self._cursor = idx
 
     def append(self, timestamp, price):
@@ -61,10 +74,10 @@ class PriceHistory:
         self._series.loc[pd.Timestamp(timestamp)] = price
         self._cursor = len(self._series) - 1
 
-    def load_history(self, start_date: str):
+    def _fetch_history(self):
         """Fetch historical data through client and populate internal series."""
         pool = self._resolve_pool()
-        target_ts = int(pd.to_datetime(start_date).timestamp())
+        target_ts = int(pd.to_datetime(self._start_date).timestamp())
 
         all_rows = []
         cursor = None
@@ -94,7 +107,7 @@ class PriceHistory:
         data = {pd.to_datetime(row[0], unit="s"): row[1] for row in all_rows}
         self._series = pd.Series(data, dtype=float).sort_index()
         self._series = self._series[~self._series.index.duplicated(keep="last")]
-        self._series = self._series.loc[start_date:]
+        self._series = self._series.loc[self._start_date:]
         self._cursor = len(self._series) - 1
 
     def poll(self) -> float:
@@ -108,16 +121,3 @@ class PriceHistory:
         price = float(ohlcv[0][4]) if len(ohlcv[0]) > 4 else float(ohlcv[0][1])
         self.append(datetime.utcnow(), price)
         return price
-
-    @classmethod
-    def from_series(cls, token: str, series: pd.Series) -> "PriceHistory":
-        """Create a PriceHistory directly from a pandas Series (for testing)."""
-        ph = cls.__new__(cls)
-        ph.token = token
-        ph.network = ""
-        ph._client = None
-        ph._pool = None
-        ph._series = series.copy()
-        ph._series.index = pd.DatetimeIndex(ph._series.index)
-        ph._cursor = len(ph._series) - 1 if len(ph._series) else -1
-        return ph

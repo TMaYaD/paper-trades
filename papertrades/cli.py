@@ -1,41 +1,9 @@
 import click
 
-from .client import CachedClient, GeckoClient
 from .engine import BacktestEngine, LiveEngine
 from .plotting import PlotEntry, plot_results
 from .stats import StrategyStats, print_results_table
 from .strategies import REGISTRY
-
-
-def _fetch_and_merge(token_a, token_b, start_date, client):
-    """Fetch historical data for two tokens and return merged hourly + daily DataFrames."""
-    import pandas as pd
-    from .price_history import PriceHistory
-
-    print("\nLocating optimal liquidity pools via GeckoTerminal...")
-    hist_a = PriceHistory(token_a, "solana", client)
-    hist_b = PriceHistory(token_b, "solana", client)
-
-    print("Downloading historical hourly data...")
-    hist_a.load_history(str(start_date))
-    hist_b.load_history(str(start_date))
-
-    df_a = hist_a.all_prices().to_frame("price_a")
-    df_b = hist_b.all_prices().to_frame("price_b")
-
-    df = df_a.join(df_b, how="inner").sort_index()
-    df = df.loc[str(start_date):]
-
-    if df.empty:
-        raise ValueError("Dataset is empty after applying start-date filter.")
-
-    df_hourly = df.copy()
-    df_daily = df.resample("D").first().dropna()
-
-    if len(df_daily) < 2:
-        raise ValueError("Not enough daily data points.")
-
-    return df_hourly, df_daily
 
 
 @click.group()
@@ -82,9 +50,6 @@ def backtest(token_a, token_b, start_date, strategies, interval, swap_fee):
     print(f"Strategies:   {', '.join(strat_names)}")
     print(f"Intervals:    {', '.join(intervals)}")
 
-    client = CachedClient(GeckoClient())
-    df_hourly, df_daily = _fetch_and_merge(token_a, token_b, start_date, client)
-
     engine = BacktestEngine(token_a, token_b, swap_fee)
     hold = REGISTRY["hold"]()
 
@@ -94,15 +59,13 @@ def backtest(token_a, token_b, start_date, strategies, interval, swap_fee):
     plot_data = []
 
     for iv in intervals:
-        df_bars = df_hourly if iv == "hourly" else df_daily
         periods_per_year = 365 * 24 if iv == "hourly" else 365
 
-        baseline_result = engine.run(hold, start_date, iv, df_bars=df_bars)
+        baseline_result = engine.run(hold, start_date, iv)
 
         for sname in strat_names:
             strategy = REGISTRY[sname]()
-            result = engine.run(strategy, start_date, iv,
-                                df_bars=df_bars, df_hourly=df_hourly)
+            result = engine.run(strategy, start_date, iv)
 
             label = f"{iv.title()} {sname}"
             stats = StrategyStats.compute(
@@ -118,11 +81,9 @@ def backtest(token_a, token_b, start_date, strategies, interval, swap_fee):
             ))
 
     if "daily" in intervals:
-        table_baseline = engine.run(hold, start_date, "daily",
-                                    df_bars=df_daily).value_history
+        table_baseline = engine.run(hold, start_date, "daily").value_history
     else:
-        table_baseline = engine.run(hold, start_date, "hourly",
-                                    df_bars=df_hourly).value_history
+        table_baseline = engine.run(hold, start_date, "hourly").value_history
 
     print_results_table(all_stats, table_baseline)
     plot_results(plot_data)
