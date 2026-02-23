@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 
 from papertrades.dex import SimulatedDex
-from papertrades.wallet import SimulatedWallet
+from papertrades.wallet import Activity, SimulatedWallet
 from papertrades.price_history import PriceHistory
 from papertrades.engine import BacktestEngine, _portfolio_value
 from papertrades.stats import StrategyStats
@@ -54,6 +54,47 @@ class TestSimulatedWallet:
         w = SimulatedWallet.balanced('A', 'B', dex)
         assert w.balance('A') == 1.0
         assert w.balance('B') == pytest.approx(2.0)  # 100/50
+
+    def test_activity_empty_initially(self):
+        w = SimulatedWallet({'A': 10.0})
+        assert w.activity == []
+
+    def test_set_time_and_swap_records_activity(self):
+        dex = SimulatedDex({'A': 2.0, 'B': 1.0}, fee=0.0)
+        w = SimulatedWallet({'A': 10.0, 'B': 10.0})
+        w.set_time('2025-01-01T00:00')
+        received = w.swap('B', 5.0, 'A', dex)
+        assert len(w.activity) == 1
+        act = w.activity[0]
+        assert act == Activity('2025-01-01T00:00', 'B', 5.0, 'A', received)
+
+    def test_activity_is_copy(self):
+        dex = SimulatedDex({'A': 1.0, 'B': 1.0}, fee=0.0)
+        w = SimulatedWallet({'A': 10.0, 'B': 10.0})
+        w.swap('A', 1.0, 'B', dex)
+        acts = w.activity
+        acts.clear()
+        assert len(w.activity) == 1
+
+    def test_swap_without_set_time_records_none_timestamp(self):
+        dex = SimulatedDex({'A': 1.0, 'B': 1.0}, fee=0.0)
+        w = SimulatedWallet({'A': 10.0, 'B': 10.0})
+        w.swap('A', 1.0, 'B', dex)
+        assert w.activity[0].timestamp is None
+
+    def test_swap_activity_populates_on_existing_swap_tests(self):
+        """Existing swap path: verify activity is populated as side-effect."""
+        dex = SimulatedDex({'A': 1.0, 'B': 1.0}, fee=0.01)
+        w = SimulatedWallet({'A': 0.0, 'B': 100.0})
+        w.set_time(42)
+        received = w.swap('B', 100.0, 'A', dex)
+        assert len(w.activity) == 1
+        act = w.activity[0]
+        assert act.timestamp == 42
+        assert act.sell_token == 'B'
+        assert act.sell_amount == pytest.approx(100.0)
+        assert act.buy_token == 'A'
+        assert act.received == pytest.approx(received)
 
 
 # --- Stub client ---

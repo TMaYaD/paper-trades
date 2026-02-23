@@ -68,6 +68,7 @@ class BacktestEngine:
             dex.prices[token_a] = p_a
             dex.prices[token_b] = p_b
 
+            wallet.set_time(tick)
             signal = strategy.step(wallet, history_a, history_b, tick=tick)
             if signal != 0:
                 if signal > 0:
@@ -141,6 +142,7 @@ class LiveEngine:
                 dex.prices[token_a] = p_a
                 dex.prices[token_b] = p_b
 
+                wallet.set_time(now)
                 signal = self.strategy.step(wallet, hist_a, hist_b, tick=now)
                 traded = signal != 0
                 if traded:

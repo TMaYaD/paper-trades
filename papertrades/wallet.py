@@ -1,6 +1,16 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 from .dex import Dex
+
+
+@dataclass
+class Activity:
+    timestamp: object
+    sell_token: str
+    sell_amount: float
+    buy_token: str
+    received: float
 
 
 class Wallet(ABC):
@@ -13,6 +23,10 @@ class Wallet(ABC):
     @abstractmethod
     def balances(self) -> dict[str, float]: ...
 
+    @property
+    @abstractmethod
+    def activity(self) -> list[Activity]: ...
+
     @abstractmethod
     def swap(self, sell_token: str, sell_amount: float, buy_token: str, dex: Dex) -> float:
         """Sell sell_amount of sell_token, buy buy_token via dex. Returns amount received."""
@@ -23,6 +37,8 @@ class SimulatedWallet(Wallet):
 
     def __init__(self, balances: dict[str, float]):
         self._balances = dict(balances)
+        self._activity: list[Activity] = []
+        self._time = None
 
     def balance(self, token: str) -> float:
         return self._balances.get(token, 0.0)
@@ -31,10 +47,18 @@ class SimulatedWallet(Wallet):
     def balances(self) -> dict[str, float]:
         return dict(self._balances)
 
+    @property
+    def activity(self) -> list[Activity]:
+        return list(self._activity)
+
+    def set_time(self, t):
+        self._time = t
+
     def swap(self, sell_token: str, sell_amount: float, buy_token: str, dex: Dex) -> float:
         received = dex.swap(sell_token, sell_amount, buy_token)
         self._balances[sell_token] -= sell_amount
         self._balances[buy_token] = self._balances.get(buy_token, 0.0) + received
+        self._activity.append(Activity(self._time, sell_token, sell_amount, buy_token, received))
         return received
 
     @classmethod
