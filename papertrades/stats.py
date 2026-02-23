@@ -3,6 +3,8 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from .wallet import Wallet
+
 
 def _max_drawdown(values) -> float:
     peak = values[0]
@@ -27,13 +29,18 @@ class StrategyStats:
     sharpe: float
     max_drawdown: float
     win_rate: float
-    trade_count: int
-    norm: list[float] = field(repr=False)
+    wallet: Wallet | None = field(default=None, repr=False)
+    norm: list[float] = field(default_factory=list, repr=False)
+
+    @property
+    def trade_count(self) -> int:
+        return len(self.wallet.activity) if self.wallet else 0
 
     @classmethod
     def compute(cls, history: list[float], baseline: list[float],
-                label: str, periods_per_year: int,
-                trade_count: int = 0) -> "StrategyStats":
+                label: str,
+                wallet: Wallet | None = None) -> "StrategyStats":
+        periods_per_year = 365 * 24  # hourly data
         norm = [v / b for v, b in zip(history, baseline)]
         total_ret = (history[-1] / history[0] - 1) * 100
         base_ret = (baseline[-1] / baseline[0] - 1) * 100
@@ -59,7 +66,7 @@ class StrategyStats:
             sharpe=sharpe,
             max_drawdown=mdd,
             win_rate=win_rate,
-            trade_count=trade_count,
+            wallet=wallet,
             norm=norm,
         )
 

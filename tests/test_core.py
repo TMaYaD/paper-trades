@@ -178,8 +178,13 @@ class TestStrategyStats:
     def test_compute(self):
         history = [1.0, 1.1, 1.2, 1.15, 1.3]
         baseline = [1.0, 1.05, 1.1, 1.08, 1.2]
-        stats = StrategyStats.compute(history, baseline, 'test', 365, trade_count=3)
+        dex = SimulatedDex({'A': 1.0, 'B': 1.0}, fee=0.0)
+        w = SimulatedWallet({'A': 10.0, 'B': 10.0})
+        for _ in range(3):
+            w.swap('A', 1.0, 'B', dex)
+        stats = StrategyStats.compute(history, baseline, 'test', wallet=w)
         assert stats.label == 'test'
+        assert stats.wallet is w
         assert stats.trade_count == 3
         assert stats.total_return == pytest.approx(30.0)
         assert len(stats.norm) == 5
@@ -211,17 +216,17 @@ class TestBacktestEngine:
         df = _make_bars(n)
         engine = BacktestEngine('token_a', 'token_b', swap_fee=0.005,
                                 client=_stub_client_from_bars(df))
-        result = engine.run(REGISTRY[strategy_name](), '2025-01-01', 'hourly')
+        result = engine.run(REGISTRY[strategy_name](), '2025-01-01')
         return result, df
 
     def test_hold_no_trades(self):
         result, df = self._run('hold')
-        assert result.trade_count == 0
+        assert len(result.wallet.activity) == 0
         assert len(result.value_history) == len(df)
 
     def test_trade_half_produces_trades(self):
         result, _ = self._run('trade-half', n=50)
-        assert result.trade_count > 0
+        assert len(result.wallet.activity) > 0
 
     def test_trade_half_signal_is_absolute(self):
         df = _make_bars(50)
@@ -252,7 +257,7 @@ class TestBacktestEngine:
         engine = BacktestEngine('token_a', 'token_b', swap_fee=0.005,
                                 client=_stub_client_from_bars(df))
         for name in REGISTRY:
-            result = engine.run(REGISTRY[name](), '2025-01-01', 'hourly')
+            result = engine.run(REGISTRY[name](), '2025-01-01')
             assert len(result.value_history) == len(df), f"{name}: length mismatch"
 
     def test_balances_never_negative(self):

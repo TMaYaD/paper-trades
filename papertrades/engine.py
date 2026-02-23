@@ -3,8 +3,6 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 
-import pandas as pd
-
 from .client import CachedClient, GeckoClient
 from .dex import SimulatedDex
 from .price_history import PriceHistory
@@ -14,7 +12,7 @@ from .wallet import SimulatedWallet
 @dataclass
 class BacktestResult:
     value_history: list[float]
-    trade_count: int
+    wallet: SimulatedWallet
     dates: list
 
 
@@ -33,8 +31,7 @@ class BacktestEngine:
         self.swap_fee = swap_fee
         self.network = network
 
-    def run(self, strategy, start_date,
-            interval: str = "hourly") -> BacktestResult:
+    def run(self, strategy, start_date) -> BacktestResult:
         """Run a strategy over historical bars."""
         token_a, token_b = self.token_a, self.token_b
 
@@ -44,8 +41,6 @@ class BacktestEngine:
         # Align series on common timestamps
         common_idx = history_a.all_prices().index.intersection(
             history_b.all_prices().index)
-        if interval == "daily":
-            common_idx = pd.Series(index=common_idx).resample("D").first().index
 
         p_a0 = history_a.price_at(common_idx[0])
         p_b0 = history_b.price_at(common_idx[0])
@@ -53,7 +48,6 @@ class BacktestEngine:
         wallet = SimulatedWallet.balanced(token_a, token_b, dex)
 
         value_history = [_portfolio_value(wallet, dex, token_a, token_b)]
-        trades = 0
         dates = list(common_idx)
 
         for i in range(1, len(common_idx)):
@@ -75,20 +69,19 @@ class BacktestEngine:
                     wallet.swap(token_b, signal, token_a, dex)
                 else:
                     wallet.swap(token_a, abs(signal), token_b, dex)
-                trades += 1
 
             value_history.append(_portfolio_value(wallet, dex, token_a, token_b))
 
         return BacktestResult(
             value_history=value_history,
-            trade_count=trades,
+            wallet=wallet,
             dates=dates,
         )
 
 
 class LiveEngine:
     def __init__(self, token_a: str, token_b: str, strategy,
-                 swap_fee: float = 0.005, interval: str = "hourly",
+                 swap_fee: float = 0.005,
                  network: str = "solana", client: CachedClient | None = None,
                  trades_file: str = "trades.jsonl"):
         self._client = client or CachedClient(GeckoClient())
@@ -96,19 +89,18 @@ class LiveEngine:
         self.token_b = token_b
         self.strategy = strategy
         self.swap_fee = swap_fee
-        self.interval = interval
         self.network = network
         self.trades_file = trades_file
 
     def run(self):
         token_a, token_b = self.token_a, self.token_b
-        interval_seconds = 3600 if self.interval == "hourly" else 86400
+        interval_seconds = 3600
 
         print(f"--- Live Paper Trading ---")
         print(f"Strategy:  {self.strategy.name}")
         print(f"Token A:   {token_a[:12]}...")
         print(f"Token B:   {token_b[:12]}...")
-        print(f"Interval:  {self.interval} ({interval_seconds}s)")
+        print(f"Interval:  hourly ({interval_seconds}s)")
         print(f"Swap fee:  {self.swap_fee}")
         print(f"Logging to: {self.trades_file}")
         print("Press Ctrl+C to stop.\n")
@@ -143,14 +135,15 @@ class LiveEngine:
                 dex.prices[token_b] = p_b
 
                 wallet.set_time(now)
+                prev_trades = len(wallet.activity)
                 signal = self.strategy.step(wallet, hist_a, hist_b, tick=now)
-                traded = signal != 0
-                if traded:
+                if signal != 0:
                     if signal > 0:
                         wallet.swap(token_b, signal, token_a, dex)
                     else:
                         wallet.swap(token_a, abs(signal), token_b, dex)
 
+                traded = len(wallet.activity) > prev_trades
                 pv = _portfolio_value(wallet, dex, token_a, token_b)
 
                 log_entry = {

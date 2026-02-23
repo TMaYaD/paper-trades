@@ -3,14 +3,18 @@ import click
 from .engine import BacktestEngine, LiveEngine
 from .plotting import PlotEntry, plot_results
 from .stats import StrategyStats, print_results_table
-from .strategies import REGISTRY
+from .strategies import REGISTRY, lookup
 
 
 @click.group()
+@click.option("-S", "--list-strategies", is_flag=True, is_eager=True,
+              expose_value=False, callback=lambda ctx, _param, value: (
+                  click.echo("\n".join(sorted(REGISTRY))) or ctx.exit()
+              ) if value else None,
+              help="List available strategies and exit.")
 def cli():
     """papertrades — backtest and paper-trade crypto strategies."""
     pass
-
 
 @cli.command()
 @click.option("--token-a",
@@ -25,67 +29,41 @@ def cli():
               help="Start datetime (YYYY-MM-DD HH:MM:SS)")
 @click.option("--strategy", "-s", "strategies", multiple=True,
               help="Strategy name(s) to run. Omit to run all.")
-@click.option("--interval", "-i",
-              type=click.Choice(["hourly", "daily"], case_sensitive=False),
-              default=None,
-              help="Interval: hourly or daily. Omit to run both.")
 @click.option("--swap-fee", type=float, default=0.005, help="Swap fee (default 0.005)")
-def backtest(token_a, token_b, start_date, strategies, interval, swap_fee):
+def backtest(token_a, token_b, start_date, strategies, swap_fee):
     """Run backtests against historical data."""
-    if strategies:
-        strat_names = list(strategies)
-        for name in strat_names:
-            if name not in REGISTRY:
-                raise click.BadParameter(
-                    f"Unknown strategy '{name}'. Available: {', '.join(REGISTRY.keys())}")
-    else:
-        strat_names = [name for name in REGISTRY if name != "hold"]
-
-    intervals = [interval] if interval else ["daily", "hourly"]
-
     print("--- Strategy Backtest ---")
     print(f"Base Token A: {token_a}")
     print(f"Quote Token B: {token_b}")
     print(f"Start Date:   {start_date}")
-    print(f"Strategies:   {', '.join(strat_names)}")
-    print(f"Intervals:    {', '.join(intervals)}")
+    print(f"Strategies:   {', '.join(strategies)}")
 
     engine = BacktestEngine(token_a, token_b, swap_fee)
     hold = REGISTRY["hold"]()
 
     print("\nRunning strategies...")
 
+    baseline_result = engine.run(hold, start_date)
+
     all_stats = []
     plot_data = []
 
-    for iv in intervals:
-        periods_per_year = 365 * 24 if iv == "hourly" else 365
+    for strategy in lookup(*strategies):
+        result = engine.run(strategy, start_date)
 
-        baseline_result = engine.run(hold, start_date, iv)
+        stats = StrategyStats.compute(
+            result.value_history, baseline_result.value_history,
+            strategy.name, wallet=result.wallet,
+        )
+        all_stats.append(stats)
+        plot_data.append(PlotEntry(
+            label=strategy.name,
+            dates=result.dates,
+            norm=stats.norm,
+            activity=result.wallet.activity,
+        ))
 
-        for sname in strat_names:
-            strategy = REGISTRY[sname]()
-            result = engine.run(strategy, start_date, iv)
-
-            label = f"{iv.title()} {sname}"
-            stats = StrategyStats.compute(
-                result.value_history, baseline_result.value_history,
-                label, periods_per_year, result.trade_count,
-            )
-            all_stats.append(stats)
-            plot_data.append(PlotEntry(
-                label=label,
-                dates=result.dates,
-                norm=stats.norm,
-                interval=iv,
-            ))
-
-    if "daily" in intervals:
-        table_baseline = engine.run(hold, start_date, "daily").value_history
-    else:
-        table_baseline = engine.run(hold, start_date, "hourly").value_history
-
-    print_results_table(all_stats, table_baseline)
+    print_results_table(all_stats, baseline_result.value_history)
     plot_results(plot_data)
 
 
@@ -98,18 +76,10 @@ def backtest(token_a, token_b, start_date, strategies, interval, swap_fee):
               help="Mint address for Quote Token (e.g., SKR).")
 @click.option("--strategy", "-s", required=True,
               help="Strategy name to trade with.")
-@click.option("--interval", "-i",
-              type=click.Choice(["hourly", "daily"], case_sensitive=False),
-              default="hourly",
-              help="Polling interval (default: hourly)")
 @click.option("--swap-fee", type=float, default=0.005, help="Swap fee (default 0.005)")
-def trade(token_a, token_b, strategy, interval, swap_fee):
+def trade(token_a, token_b, strategy, swap_fee):
     """Run live paper trading — polls prices and simulates trades."""
-    if strategy not in REGISTRY:
-        raise click.BadParameter(
-            f"Unknown strategy '{strategy}'. Available: {', '.join(REGISTRY.keys())}")
-
-    engine = LiveEngine(token_a, token_b, REGISTRY[strategy](), swap_fee, interval)
+    engine = LiveEngine(token_a, token_b, lookup(strategy)[0], swap_fee)
     engine.run()
 
 

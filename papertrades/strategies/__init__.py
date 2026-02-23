@@ -33,3 +33,17 @@ def _discover():
 
 
 _discover()
+
+def lookup(*names: str) -> type[Strategy]:
+    """Return the Strategy class for the given name, or raise ValueError."""
+    strategies = []
+    for name in names:
+        if name in REGISTRY:
+            strategies.append(REGISTRY[name]())
+        else:
+            raise ValueError(f"Unknown strategy '{name}'. Available: {', '.join(REGISTRY.keys())}")
+    return strategies
+
+def list_strategies() -> list[str]:
+    """Return a list of all available strategy names."""
+    return sorted(REGISTRY.keys())
