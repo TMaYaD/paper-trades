@@ -1,10 +1,10 @@
 ![Liam Neeson from Taken](image.png)
 
-> ### **I don’t know who you are.**
+> ### **I don't know who you are.**
 >
-> I don’t know what your risk tolerance is. If you are looking for alpha, I can tell you I don’t have it. But what I do have are a very particular set of **bugs**. Bugs I have acquired over a very short and confusing learning curve. Bugs that make me a nightmare for your brokerage account.
+> I don't know what your risk tolerance is. If you are looking for alpha, I can tell you I don't have it. But what I do have are a very particular set of **bugs**. Bugs I have acquired over a very short and confusing learning curve. Bugs that make me a nightmare for your brokerage account.
 >
-> If you close this tab now, that’ll be the end of it. I will not look for you, I will not pursue you. But if you don't, if you clone this repo, if you actually run this code with real money...
+> If you close this tab now, that'll be the end of it. I will not look for you, I will not pursue you. But if you don't, if you clone this repo, if you actually run this code with real money...
 >
 > **I WILL LOOK FOR YOU, I WILL FIND YOU, AND I WILL CALL YOU STUPID.**
 
@@ -17,11 +17,7 @@ This repository is a **programmatic trading bot** built for the sole purpose of 
 
 ### ⚠️ Disclaimer: Read Carefully
 
-*   **Educational Only:** This is for learning how to connect to APIs and handle data streams.
-
-*   **Zero Financial Advice:** I am not a trader. I am a person with a keyboard and a dangerous amount of confidence.
-
-*   **The "Neeson" Guarantee:** If you deploy this to a production environment, you are choosing a life of pain.
+*   **Educational Only:** For learning how APIs, data pipelines, and trading strategies work.
 
 
 * * *
@@ -43,22 +39,28 @@ Usage (If You Must)
 
 1.  **Clone the Repo:**
 
-    Bash
-
+    ```bash
         git clone https://github.com/user/paper-trades.git
+    ```
 
 2.  **Install Dependencies:**
 
-    Bash
-
-        pip install -r requirements.txt
+    ```bash
+        python -m venv .venv
+        source .venv/bin/activate
+        pip install -e .
+        pip install pytest  # for running tests
+    ```
 
 3.  **Run in Paper Trading ONLY:**
 
-    Bash
-
+    ```bash
         python papertrades/cli.py --help
+    ```
 
+4.  **Repent**
+
+    Buy high, sell low, wonder why the chart is red.
 
 * * *
 
