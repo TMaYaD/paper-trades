@@ -45,7 +45,7 @@ Usage (If You Must)
 
     Bash
 
-        git clone https://github.com/user/taken-trading-bot.git
+        git clone https://github.com/user/paper-trades.git
 
 2.  **Install Dependencies:**
 
@@ -57,7 +57,7 @@ Usage (If You Must)
 
     Bash
 
-        python main.py --mode "im-actually-just-learning"
+        python papertrades/cli.py --help
 
 
 * * *
@@ -65,5 +65,3 @@ Usage (If You Must)
 > "I don't know trading. I can tell you this is just for learning. **Don't use it.**"
 
 * * *
-
-**Would you like me to add a "Risk Disclosure" section that continues the parody, or perhaps a technical breakdown of the (theoretical) strategy?**
