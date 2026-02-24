@@ -55,7 +55,7 @@ Usage (If You Must)
 3.  **Run in Paper Trading ONLY:**
 
     ```bash
-        python papertrades/cli.py --help
+        papertrades --help
     ```
 
 4.  **Repent**
