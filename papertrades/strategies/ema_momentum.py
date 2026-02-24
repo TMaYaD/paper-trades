@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 
 from . import Strategy
 
@@ -39,8 +40,8 @@ class EMAMomentumStrategy(Strategy):
         return float(weight.iloc[-1])
 
     def step(self, wallet, history_a, history_b, tick=None) -> float:
-        prices_a = history_a.all_prices()
-        prices_b = history_b.all_prices()
+        prices_a = pd.Series(dict(history_a.prices(end=tick)))
+        prices_b = pd.Series(dict(history_b.prices(end=tick)))
         if len(prices_a) < 2 or len(prices_b) < 2:
             return 0
 
@@ -49,8 +50,8 @@ class EMAMomentumStrategy(Strategy):
             return 0
 
         target = self._target_weight_a(ratio)
-        price_a = history_a.current_price
-        price_b = history_b.current_price
+        price_a = history_a.price_at(tick)
+        price_b = history_b.price_at(tick)
         bal_a = wallet.balance(history_a.token)
         bal_b = wallet.balance(history_b.token)
         portfolio = bal_a + (bal_b * price_b) / price_a

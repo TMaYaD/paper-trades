@@ -43,7 +43,3 @@ def lookup(*names: str) -> type[Strategy]:
         else:
             raise ValueError(f"Unknown strategy '{name}'. Available: {', '.join(REGISTRY.keys())}")
     return strategies
-
-def list_strategies() -> list[str]:
-    """Return a list of all available strategy names."""
-    return sorted(REGISTRY.keys())

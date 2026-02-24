@@ -1,11 +1,12 @@
 import json
 import time
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import timedelta
 
 from .client import CachedClient, GeckoClient
 from .dex import SimulatedDex
 from .price_history import PriceHistory
+from .timestamps import ceil_hour, parse_ts, utcnow
 from .wallet import SimulatedWallet
 
 
@@ -31,46 +32,54 @@ class BacktestEngine:
         self.swap_fee = swap_fee
         self.network = network
 
-    def run(self, strategy, start_date) -> BacktestResult:
+    def run(self, strategy, start_date, end_date=None) -> BacktestResult:
         """Run a strategy over historical bars."""
         token_a, token_b = self.token_a, self.token_b
 
-        history_a = PriceHistory(token_a, self.network, self._client, start_date)
-        history_b = PriceHistory(token_b, self.network, self._client, start_date)
+        history_a = PriceHistory(token_a, self.network, self._client)
+        history_b = PriceHistory(token_b, self.network, self._client)
 
-        # Align series on common timestamps
-        common_idx = history_a.all_prices().index.intersection(
-            history_b.all_prices().index)
+        # Clamp start to the later pool_created_at so we don't request
+        # data from before a pool existed.
+        effective_start = parse_ts(start_date)
+        for h in (history_a, history_b):
+            if h.pool_created_at is not None and h.pool_created_at > effective_start:
+                effective_start = h.pool_created_at
 
-        p_a0 = history_a.price_at(common_idx[0])
-        p_b0 = history_b.price_at(common_idx[0])
-        dex = SimulatedDex({token_a: p_a0, token_b: p_b0}, fee=self.swap_fee)
-        wallet = SimulatedWallet.balanced(token_a, token_b, dex)
+        # Walk hourly from effective_start to end_date (default: now)
+        tick = ceil_hour(effective_start)
+        end = parse_ts(end_date) if end_date else utcnow()
 
-        value_history = [_portfolio_value(wallet, dex, token_a, token_b)]
-        dates = list(common_idx)
+        value_history = []
+        dates = []
+        dex = wallet = None
 
-        for i in range(1, len(common_idx)):
-            tick = common_idx[i]
-            history_a.set_cursor(
-                history_a.all_prices().index.get_indexer([tick], method="ffill")[0])
-            history_b.set_cursor(
-                history_b.all_prices().index.get_indexer([tick], method="ffill")[0])
-            p_a = history_a.current_price
-            p_b = history_b.current_price
+        while tick <= end:
+            try:
+                p_a = history_a.price_at(tick)
+                p_b = history_b.price_at(tick)
+            except ValueError:
+                tick += timedelta(hours=1)
+                continue
 
-            dex.prices[token_a] = p_a
-            dex.prices[token_b] = p_b
+            if dex is None:
+                dex = SimulatedDex({token_a: p_a, token_b: p_b}, fee=self.swap_fee)
+                wallet = SimulatedWallet.balanced(token_a, token_b, dex)
+            else:
+                dex.prices[token_a] = p_a
+                dex.prices[token_b] = p_b
 
-            wallet.set_time(tick)
-            signal = strategy.step(wallet, history_a, history_b, tick=tick)
-            if signal != 0:
-                if signal > 0:
-                    wallet.swap(token_b, signal, token_a, dex)
-                else:
-                    wallet.swap(token_a, abs(signal), token_b, dex)
+                wallet.set_time(tick)
+                signal = strategy.step(wallet, history_a, history_b, tick=tick)
+                if signal != 0:
+                    if signal > 0:
+                        wallet.swap(token_b, signal, token_a, dex)
+                    else:
+                        wallet.swap(token_a, abs(signal), token_b, dex)
 
             value_history.append(_portfolio_value(wallet, dex, token_a, token_b))
+            dates.append(tick)
+            tick += timedelta(hours=1)
 
         return BacktestResult(
             value_history=value_history,
@@ -108,8 +117,8 @@ class LiveEngine:
         print("Fetching initial prices...")
         hist_a = PriceHistory(token_a, self.network, self._client)
         hist_b = PriceHistory(token_b, self.network, self._client)
-        p_a = hist_a.poll()
-        p_b = hist_b.poll()
+        p_a = hist_a.current_price
+        p_b = hist_b.current_price
         print(f"  Price A: ${p_a:.6f}  |  Price B: ${p_b:.6f}")
 
         dex = SimulatedDex({token_a: p_a, token_b: p_b}, fee=self.swap_fee)
@@ -122,11 +131,11 @@ class LiveEngine:
             while True:
                 time.sleep(interval_seconds)
                 tick += 1
-                now = datetime.utcnow()
+                now = utcnow()
 
                 try:
-                    p_a = hist_a.poll()
-                    p_b = hist_b.poll()
+                    p_a = hist_a.current_price
+                    p_b = hist_b.current_price
                 except Exception as e:
                     print(f"[{now.isoformat()}] Error fetching prices: {e}. Retrying next interval.")
                     continue

@@ -19,8 +19,8 @@ class TradeHalfStrategy(Strategy):
         except ValueError:
             return 0
 
-        cur_a = history_a.current_price
-        cur_b = history_b.current_price
+        cur_a = history_a.price_at(tick)
+        cur_b = history_b.price_at(tick)
         ret_a = (cur_a - prev_a) / prev_a
         ret_b = (cur_b - prev_b) / prev_b
 

@@ -1,7 +1,6 @@
 from dataclasses import dataclass, field
 
-import numpy as np
-import pandas as pd
+import math
 
 from .wallet import Wallet
 
@@ -45,11 +44,15 @@ class StrategyStats:
         total_ret = (history[-1] / history[0] - 1) * 100
         base_ret = (baseline[-1] / baseline[0] - 1) * 100
         alpha = total_ret - base_ret
-        returns = pd.Series(history).pct_change().dropna()
-        vol = returns.std() * np.sqrt(periods_per_year) * 100
+        returns = [(history[i] - history[i-1]) / history[i-1]
+                   for i in range(1, len(history))]
+        n = len(returns)
+        mean_r = sum(returns) / n if n else 0
+        std_r = (sum((r - mean_r) ** 2 for r in returns) / n) ** 0.5 if n else 0
+        vol = std_r * math.sqrt(periods_per_year) * 100
         sharpe = (
-            (returns.mean() / returns.std() * np.sqrt(periods_per_year))
-            if returns.std() > 0
+            (mean_r / std_r * math.sqrt(periods_per_year))
+            if std_r > 0
             else 0
         )
         mdd = _max_drawdown(history) * 100

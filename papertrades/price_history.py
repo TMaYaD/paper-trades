@@ -1,123 +1,85 @@
-import time as _time
-from datetime import datetime
+from collections.abc import Iterator
+from datetime import timedelta
+from functools import cached_property
 
-import pandas as pd
+from .timestamps import utcnow
+
+_BATCH_SIZE = 1000
 
 
 class PriceHistory:
-    """Domain-specific price accessor.
+    """Thin stateless translation layer.
 
-    Backtest: pass start_date — history is lazy-loaded on first access.
-    Live: omit start_date — data arrives via poll()/append().
+    Translates domain time-range queries into correctly-sized client calls
+    and yields results.  No in-memory state, no cursor, no lazy-loading.
     """
 
-    def __init__(self, token: str, network: str, client,
-                 start_date: str | None = None):
+    def __init__(self, token: str, network: str, client):
         self.token = token
         self.network = network
         self._client = client
-        self._start_date = start_date
-        self._pool = None
-        self._series = pd.Series(dtype=float)
-        self._series.index = pd.DatetimeIndex([])
-        self._cursor = -1
-        self._loaded = start_date is None  # nothing to lazy-load in live mode
 
-    def _ensure_loaded(self):
-        if not self._loaded:
-            self._loaded = True
-            self._fetch_history()
+    @cached_property
+    def _pool_attrs(self):
+        pools = self._client.get_top_pools(self.network, self.token)
+        if not pools:
+            raise RuntimeError(f"Could not locate a pool for {self.token}")
+        return pools[0]["attributes"]
 
-    def _resolve_pool(self):
-        if self._pool is None:
-            pools = self._client.get_top_pools(self.network, self.token)
-            if not pools:
-                raise RuntimeError(f"Could not locate a pool for {self.token}")
-            self._pool = pools[0]["attributes"]["address"]
-        return self._pool
+    @cached_property
+    def pool(self):
+        return self._pool_attrs["address"]
+
+    @cached_property
+    def pool_created_at(self):
+        return self._pool_attrs.get("pool_created_at")
 
     @property
     def current_price(self) -> float:
-        self._ensure_loaded()
-        if self._cursor < 0:
-            raise ValueError(f"No current price for {self.token}")
-        return float(self._series.iloc[self._cursor])
+        return self.price_at(utcnow())
 
-    def price_at(self, time) -> float:
-        """Closest price at or before the given time."""
-        self._ensure_loaded()
-        time = pd.Timestamp(time)
-        mask = self._series.index[self._series.index <= time]
-        if len(mask) == 0:
-            raise ValueError(f"No price data at or before {time} for {self.token}")
-        return float(self._series.loc[mask[-1]])
+    def price_at(self, t) -> float:
+        """Single price at or before *t*.  Calls client with limit=1."""
+        ohlcv = self._client.get_ohlcv(
+            self.network, self.pool, "hour", self.token,
+            limit=1, before_timestamp=t + timedelta(seconds=1),
+        )
+        if not ohlcv:
+            raise ValueError(f"No price data at or before {t}")
+        return float(ohlcv[0][1])
 
-    def prices_since(self, time) -> pd.Series:
-        """All prices from time up to current cursor position."""
-        self._ensure_loaded()
-        time = pd.Timestamp(time)
-        end = self._series.index[self._cursor]
-        return self._series.loc[time:end].copy()
+    def prices(self, *, start=None, end=None) -> Iterator[tuple]:
+        """Yield (datetime, price) from *start* to *end*.
 
-    def all_prices(self) -> pd.Series:
-        """All prices up to current cursor position."""
-        self._ensure_loaded()
-        return self._series.iloc[: self._cursor + 1].copy()
+        *start* defaults to pool_created_at.  Iterates backward from
+        *end* in _BATCH_SIZE chunks, then yields in chronological order.
+        """
+        if start is None:
+            start = self.pool_created_at
+        if start is None:
+            raise ValueError("start is required when pool_created_at is unknown")
+        if end is None:
+            end = utcnow()
 
-    def set_cursor(self, idx: int):
-        """Advance the current tick position (called by engine)."""
-        self._ensure_loaded()
-        self._cursor = idx
-
-    def append(self, timestamp, price):
-        """Add a new price point (live mode)."""
-        self._series.loc[pd.Timestamp(timestamp)] = price
-        self._cursor = len(self._series) - 1
-
-    def _fetch_history(self):
-        """Fetch historical data through client and populate internal series."""
-        pool = self._resolve_pool()
-        target_ts = int(pd.to_datetime(self._start_date).timestamp())
-
-        all_rows = []
-        cursor = None
-
+        # get_ohlcv returns the newest N rows before a timestamp,
+        # so walk backward from end, collecting chunks.
+        collected = {}
+        cursor = end + timedelta(seconds=1)
         while True:
             ohlcv = self._client.get_ohlcv(
-                self.network, pool, "hour", self.token,
-                limit=1000, before_timestamp=cursor,
+                self.network, self.pool, "hour", self.token,
+                limit=_BATCH_SIZE, before_timestamp=cursor,
             )
             if not ohlcv:
                 break
-
-            all_rows.extend(ohlcv)
-            batch_oldest = min(row[0] for row in ohlcv)
-            print(f"  -> Loaded {len(ohlcv)} records down to {pd.to_datetime(batch_oldest, unit='s')}")
-
-            if batch_oldest <= target_ts:
+            for row in ohlcv:
+                ts = row[0]
+                if start <= ts <= end:
+                    collected[ts] = float(row[1])
+            oldest = ohlcv[-1][0]
+            if oldest <= start or len(ohlcv) < _BATCH_SIZE:
                 break
-            if cursor is not None and batch_oldest >= cursor:
-                break
-            cursor = batch_oldest
+            cursor = oldest
 
-        if not all_rows:
-            raise ValueError(f"No historical data for {self.token}")
-
-        # Build series from [timestamp, close] pairs
-        data = {pd.to_datetime(row[0], unit="s"): row[1] for row in all_rows}
-        self._series = pd.Series(data, dtype=float).sort_index()
-        self._series = self._series[~self._series.index.duplicated(keep="last")]
-        self._series = self._series.loc[self._start_date:]
-        self._cursor = len(self._series) - 1
-
-    def poll(self) -> float:
-        """Fetch current price from client, append to series. For live mode."""
-        pool = self._resolve_pool()
-        ohlcv = self._client.get_ohlcv(
-            self.network, pool, "hour", self.token, limit=1,
-        )
-        if not ohlcv:
-            raise RuntimeError(f"Could not fetch current price for {self.token}")
-        price = float(ohlcv[0][4]) if len(ohlcv[0]) > 4 else float(ohlcv[0][1])
-        self.append(datetime.utcnow(), price)
-        return price
+        for ts in sorted(collected):
+            yield (ts, collected[ts])
